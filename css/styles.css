@@ -164,6 +164,11 @@ p {
     margin-bottom: 0;
 }
 
+.item h4{
+    margin-top: 0px;
+    margin-bottom: 0;
+}
+
 .tags{
     display: -webkit-box;
     margin-top: 5px;
@@ -191,7 +196,7 @@ p {
     color: #904601;
     margin-left: 10px;
 }
-.talk-tag{
+.abstract-tag{
     background-color: #1e4a7bb3;
     color: #161e33;
     margin-left: 10px;
@@ -228,10 +233,10 @@ p {
     display: block;             /* Ocupa todo el ancho disponible */
     text-decoration: none;      /* Quita el subrayado automático del enlace */
     color: inherit;             /* Mantiene los colores originales de tus h3, p y divs */
-    padding: 15px 15px;              /* Espacio interno para que el color de fondo no quede pegado al texto */
+    padding: 15px 30px;              /* Espacio interno para que el color de fondo no quede pegado al texto */
     margin-left: -15px;         /* Compensa el padding para mantener la alineación izquierda original */
     margin-right: -15px;        /* Compensa el padding derecho */
-    border-radius: 8px;         /* Suaviza las esquinas del fondo oscurecido */
+    border-radius: 30px;         /* Suaviza las esquinas del fondo oscurecido */
     transition: background-color 0.2s ease, transform 0.2s ease; /* Transición suave */
 }
 
@@ -424,6 +429,36 @@ p {
     text-decoration: underline;
 }
 
+.student-project{
+    overflow-wrap: break-word;
+    font-size: medium;
+    margin-bottom: 0;
+}
+
+.tag-supervisor{
+    background-color: #f3b51a;
+    color: #904601;  
+}
+
+.tag-examiner{
+    background-color: #d65e75db;
+    color: #73162a;
+    
+}
+
+.tag-status{
+    background-color: #1e4a7bb3;
+    color: #161e33;
+    margin-left: 10px;
+}
+
+.student-date{
+    font-size: smaller;
+    margin-top: -10px;
+    color: gray;
+}
+
+
 /* --------------------------------------------------
    Typography
 -------------------------------------------------- */
@@ -432,7 +467,7 @@ p {
     margin-top: 0;
     margin-bottom: 0;
     font-family: "Mexcellent", sans-serif;
-    font-size: clamp(3.5rem, 7vw, 100px);
+    font-size: clamp(7rem, 14vw, 100px);
     line-height: 0.95;
     overflow-wrap: anywhere;
 }
@@ -500,7 +535,7 @@ p {
     }
 
     .name {
-        font-size: clamp(3rem, 9vw, 5rem);
+        font-size: clamp(7rem, 14vw, 5rem);
     }
 }
 
@@ -534,7 +569,7 @@ p {
     }
 
     .name {
-        font-size: clamp(2.8rem, 14vw, 5rem);
+        font-size: clamp(7rem, 15vw, 5rem);
         line-height: 0.95;
     }
 
@@ -542,6 +577,7 @@ p {
         font-size: 1.25rem;
         line-height: 1.25;
     }
+
 }
 
 
@@ -559,7 +595,7 @@ p {
     }
 
     .name {
-        font-size: clamp(2.4rem, 15vw, 4rem);
+        font-size: clamp(7rem, 15vw, 5rem);
     }
 
     .container .right h2 {
