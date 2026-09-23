@@ -282,11 +282,11 @@ p {
 /* Estilos de tu fotografía */
 .profile-img {
     width: 100%;
-    max-width: 220px; /* Tamaño ideal para que no domine toda la pantalla */
+    max-width: 260px; /* Tamaño ideal para que no domine toda la pantalla */
     height: auto;
     aspect-ratio: 1 / 1; /* Fuerza a que sea un cuadrado perfecto */
     object-fit: cover;   /* Evita que tu rostro se deforme si la foto original no es cuadrada */
-    border-radius: 110px; /* Esquinas suavizadas que combinan con tus .teach-item (15px) */
+    border-radius: 130px; /* Esquinas suavizadas que combinan con tus .teach-item (15px) */
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06); /* Sombra muy sutil para dar profundidad sobre el fondo #f0e9df */
     background-color: #e2dacd; /* Color de respaldo mientras la imagen termina de cargar */
     margin-left: auto;
