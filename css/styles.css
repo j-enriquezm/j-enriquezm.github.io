@@ -119,6 +119,11 @@ p {
     margin-right: auto;
 }
 
+.about {
+    text-align: justify;
+    text-justify: inter-word;
+}
+
 .about a{
     color: #15886b;          
     text-decoration: none;
