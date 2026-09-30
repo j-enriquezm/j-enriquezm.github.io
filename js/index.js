@@ -1,13 +1,21 @@
-document.querySelectorAll('.toggle-btn').forEach(button => {
-    button.addEventListener('click', () => {
-      // 1. Encontrar el contenedor principal (.container) de este botón
-      const container = button.closest('.container');
-      
-      // 2. Encontrar el bloque de contenido derecho dentro de ese contenedor
-      const content = container.querySelector('.collapsible-content');
-      
-      // 3. Alternar las clases CSS para ejecutar la animación
-      button.classList.toggle('collapsed');
-      content.classList.toggle('collapsed');
+document.addEventListener("DOMContentLoaded", () => {
+    const toggles = document.querySelectorAll(".toggle-btn");
+
+    toggles.forEach((button) => {
+        const contentId = button.getAttribute("aria-controls");
+        const content = contentId ? document.getElementById(contentId) : null;
+
+        if (!content) return;
+
+        const setExpanded = (expanded) => {
+            button.setAttribute("aria-expanded", String(expanded));
+            button.classList.toggle("collapsed", !expanded);
+            content.classList.toggle("collapsed", !expanded);
+        };
+
+        button.addEventListener("click", () => {
+            const expanded = button.getAttribute("aria-expanded") === "true";
+            setExpanded(!expanded);
+        });
     });
-  });
+});
