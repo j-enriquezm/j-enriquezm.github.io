@@ -3,6 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; connect-src https://api.github.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta name="referrer" content="no-referrer">
 <meta name="theme-color" content="#2563eb">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -105,6 +107,11 @@ details.how summary{cursor:pointer;padding:2px 0;font-weight:700;font-size:15px}
 details.how p{font-size:13px;line-height:1.45;margin:8px 0}
 details.how.inl{margin-top:14px;background:var(--bg);border-radius:12px;padding:10px 12px}
 input[type=date]{min-height:48px}
+.nav button{position:relative}
+.sdot{position:absolute;top:4px;left:calc(50% + 8px);width:9px;height:9px;border-radius:50%;background:var(--danger);display:none}
+.nav.serr .sdot{display:block}
+.sync-st{font-size:14px;margin:10px 0 2px;padding:10px 12px;border-radius:12px;background:var(--bg);line-height:1.4}
+.btn:disabled{opacity:.6}
 @media (max-width:360px){.cmp{grid-template-columns:92px 1fr 58px}}
 @media (max-width:360px){.ring{width:108px;height:108px}.ring svg{width:108px;height:108px}.ringtxt b{font-size:22px}.summary{gap:12px}}
 </style>
@@ -116,7 +123,7 @@ input[type=date]{min-height:48px}
   <button data-tab="alimentos"><i>📚</i>Alimentos</button>
   <button data-tab="historial"><i>📈</i>Historial</button>
   <button data-tab="medidas"><i>📏</i>Medidas</button>
-  <button data-tab="ajustes"><i>⚙️</i>Ajustes</button>
+  <button data-tab="ajustes"><i>⚙️</i>Ajustes<b class="sdot"></b></button>
 </nav>
 <div class="toast" id="toast"></div>
 
@@ -216,7 +223,8 @@ function defaults(){
 }
 function migrate(s){ s.meals = s.meals || []; s.measures = Array.isArray(s.measures) ? s.measures : []; s.settings.height = s.settings.height || 190; return s; }
 function load(){ try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && Array.isArray(s.foods) && s.days && s.settings) return migrate(s); } catch(e){} return defaults(); }
-function save(){ try { localStorage.setItem(KEY, JSON.stringify(S)); } catch(e){ toast('No se pudo guardar (almacenamiento lleno)'); } }
+function saveLocal(){ try { localStorage.setItem(KEY, JSON.stringify(S)); return true; } catch(e){ toast('No se pudo guardar (almacenamiento lleno)'); return false; } }
+function save(){ if (saveLocal()) syncChanged(); }
 let S = load();
 let cur = today();
 let tab = 'hoy';
@@ -237,7 +245,7 @@ function toast(msg, undo){
   if (undo) t.querySelector('button').onclick = () => { undo(); t.classList.remove('show'); };
   toast.tm = setTimeout(()=>t.classList.remove('show'), undo ? 5000 : 2500);
 }
-function sheet(html, onMount){
+function sheet(html, onMount, onClose){
   const ov = document.createElement('div');
   ov.className = 'overlay';
   ov.innerHTML = '<div class="sheet"><div class="grab"></div>' + html + '</div>';
@@ -248,7 +256,14 @@ function sheet(html, onMount){
   const close = () => {
     if (closed) return; closed = true;
     ov.classList.remove('show');
-    setTimeout(()=>{ ov.remove(); if (!document.querySelector('.overlay')) document.body.classList.remove('lock'); }, 200);
+    if (onClose) onClose();
+    setTimeout(()=>{
+      ov.remove();
+      if (!document.querySelector('.overlay')){
+        document.body.classList.remove('lock');
+        if (pendingPull){ pendingPull = false; sync(); }
+      }
+    }, 200);
   };
   ov.addEventListener('click', e => { if (e.target === ov) close(); });
   const el = ov.querySelector('.sheet');
@@ -814,13 +829,15 @@ function renderSet(m){
       <input id="ht" inputmode="decimal" value="${S.settings.height || 190}" style="margin-top:8px">
       <div class="hint">Se usa para calcular tu relación cintura/estatura en Medidas.</div></div>
     <button class="btn" id="ssave" style="margin-top:0">Guardar ajustes</button>
-    <div class="card" style="margin-top:14px"><div class="sec">Copia de seguridad</div>
-      <div class="hint">Tus datos se guardan solo en este navegador. Exporta una copia de vez en cuando.</div>
+    <div class="card" id="cloud" style="margin-top:14px"></div>
+    <div class="card"><div class="sec">Copia de seguridad</div>
+      <div class="hint">${cfg ? 'Tus datos se guardan en este navegador y en tu nube cifrada. Exportar sigue siendo útil como copia extra.' : 'Tus datos se guardan solo en este navegador. Conecta la nube o exporta una copia de vez en cuando.'}</div>
       <button class="btn ghost" id="exp">⬇️ Exportar datos (JSON)</button>
       <button class="btn ghost" id="imp" style="margin-top:10px">⬆️ Importar datos</button>
       <input type="file" id="impf" accept="application/json,.json" style="display:none">
       <button class="btn danger" id="rst">Borrar todos los datos</button>
     </div>`;
+  drawCloud(m.querySelector('#cloud'));
   let rest = S.settings.restDays.slice();
   const hint = k => {
     const p=num(m.querySelector('#'+k+'p').value), c=num(m.querySelector('#'+k+'c').value), f=num(m.querySelector('#'+k+'f').value), kc=num(m.querySelector('#'+k+'k').value);
@@ -852,19 +869,351 @@ function renderSet(m){
       try {
         const d = JSON.parse(rd.result);
         if (!Array.isArray(d.foods) || !d.days || !d.settings) throw 0;
-        if (!confirm('Esto reemplazará tus datos actuales. ¿Continuar?')) return;
+        if (!confirm('Esto reemplazará tus datos actuales' + (cfg ? ' (también en la nube)' : '') + '. ¿Continuar?')) return;
         S = migrate(d); save(); render(); toast('Datos importados');
       } catch(e){ toast('Archivo no válido'); }
     };
     rd.readAsText(file);
   };
   m.querySelector('#rst').onclick = () => {
-    if (!confirm('¿Borrar todo (registros, alimentos, comidas y medidas)? No se puede deshacer.')) return;
+    if (!confirm('¿Borrar todo (registros, alimentos, comidas y medidas)?' + (cfg ? ' La nube conectada también se vaciará.' : '') + ' No se puede deshacer.')) return;
     S = defaults(); save(); cur = today(); render(); toast('Datos restablecidos');
   };
 }
 
+/* ---------- Sincronización cifrada con GitHub ----------
+   Los datos se cifran en el dispositivo (AES-GCM 256, clave derivada con PBKDF2-SHA256)
+   y se guardan como un archivo en un repositorio privado mediante la API de GitHub. */
+var SYNC_KEY = 'macrotrack_sync_v1', GH = 'https://api.github.com', ITER = 600000, DATA_FILE = 'macros.enc.json';
+var cfg = loadCfg(), ckey = null, syncing = false, again = false, pushT = null, choosing = false, pendingPull = false;
+var changeSeq = 0, lastErr = '', sstate = {st:'off', msg:''};
+var te = new TextEncoder(), tdc = new TextDecoder();
+
+function loadCfg(){ try { return JSON.parse(localStorage.getItem(SYNC_KEY)) || null; } catch(e){ return null; } }
+function saveCfg(){ if (cfg) localStorage.setItem(SYNC_KEY, JSON.stringify(cfg)); else localStorage.removeItem(SYNC_KEY); }
+function rememberSha(sha){ cfg.sha = sha; cfg.known = [sha, ...(cfg.known || []).filter(x=>x!==sha)].slice(0,3); }
+
+/* Clave no extraíble guardada en IndexedDB: la contraseña nunca se almacena */
+function idb(){ return new Promise((res,rej)=>{ const r = indexedDB.open('macrotrack',1); r.onupgradeneeded = ()=>r.result.createObjectStore('k'); r.onsuccess = ()=>res(r.result); r.onerror = ()=>rej(r.error); }); }
+async function idbSet(k,v){ const db = await idb(); return new Promise((res,rej)=>{ const tx = db.transaction('k','readwrite'); tx.objectStore('k').put(v,k); tx.oncomplete = ()=>res(); tx.onerror = ()=>rej(tx.error); }); }
+async function idbGet(k){ const db = await idb(); return new Promise((res,rej)=>{ const q = db.transaction('k').objectStore('k').get(k); q.onsuccess = ()=>res(q.result); q.onerror = ()=>rej(q.error); }); }
+async function idbDel(k){ const db = await idb(); return new Promise(res=>{ const tx = db.transaction('k','readwrite'); tx.objectStore('k').delete(k); tx.oncomplete = ()=>res(); tx.onerror = ()=>res(); }); }
+
+/* Cripto */
+function b64(buf){ const b = new Uint8Array(buf); let s = ''; for (let i=0;i<b.length;i+=0x8000) s += String.fromCharCode.apply(null, b.subarray(i,i+0x8000)); return btoa(s); }
+const unb64 = s => Uint8Array.from(atob(String(s).replace(/\s/g,'')), c=>c.charCodeAt(0));
+async function deriveKey(pass, salt, iter){
+  const base = await crypto.subtle.importKey('raw', te.encode(pass), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({name:'PBKDF2', salt, iterations:iter, hash:'SHA-256'}, base, {name:'AES-GCM', length:256}, false, ['encrypt','decrypt']);
+}
+async function zip(bytes, inflate){
+  const C = inflate ? (typeof DecompressionStream!=='undefined' && DecompressionStream) : (typeof CompressionStream!=='undefined' && CompressionStream);
+  if (!C) return null;
+  return new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new C('gzip'))).arrayBuffer());
+}
+async function encryptState(obj){
+  let data = te.encode(JSON.stringify(obj)), z = false;
+  const c = await zip(data, false); if (c){ data = c; z = true; }
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({name:'AES-GCM', iv}, ckey, data);
+  return JSON.stringify({app:'macrotrack', v:1, kdf:'PBKDF2-SHA256', iter:cfg.iter, salt:cfg.salt, iv:b64(iv), z, ct:b64(ct)});
+}
+function parseEnv(text){
+  let env; try { env = JSON.parse(text); } catch(e){}
+  if (!env || env.app!=='macrotrack' || !env.ct || !env.salt) throw new Error('El archivo de la nube no pertenece a esta app.');
+  return env;
+}
+async function decryptEnv(env, key){
+  let pt;
+  try { pt = new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM', iv:unb64(env.iv)}, key, unb64(env.ct))); }
+  catch(e){ throw new Error('Contraseña de cifrado incorrecta.'); }
+  if (env.z){ pt = await zip(pt, true); if (!pt) throw new Error('Tu navegador es demasiado antiguo para leer estos datos; actualízalo.'); }
+  const obj = JSON.parse(tdc.decode(pt));
+  if (!obj || !Array.isArray(obj.foods) || !obj.days || !obj.settings) throw new Error('Los datos de la nube no son válidos.');
+  return obj;
+}
+
+/* API de GitHub (el "backend") */
+function ghErr(res){
+  const msg = {401:'Token inválido o caducado. Desconecta y vuelve a conectar con un token nuevo.',
+    403:'GitHub rechazó el acceso: revisa que el token tenga “Contents: Read and write” sobre el repositorio.',
+    404:'No se encuentra el repositorio, o el token no tiene acceso a él.'}[res.status];
+  const e = new Error(msg || ('Error de GitHub (' + res.status + ').')); e.status = res.status; return e;
+}
+async function gh(c, path, {method='GET', body, raw} = {}){
+  const headers = {Authorization:'Bearer ' + c.token, Accept: raw ? 'application/vnd.github.raw+json' : 'application/vnd.github+json'};
+  if (body) headers['Content-Type'] = 'application/json';
+  try { return await fetch(GH + path, {method, headers, body: body ? JSON.stringify(body) : undefined, cache:'no-store'}); }
+  catch(e){ const er = new Error('Sin conexión: los cambios se subirán cuando vuelva internet.'); er.offline = true; throw er; }
+}
+const repoPath = c => `/repos/${encodeURIComponent(c.owner)}/${encodeURIComponent(c.repo)}`;
+const filePath = c => repoPath(c) + '/contents/' + c.path.split('/').map(encodeURIComponent).join('/');
+async function getRemote(c){
+  const res = await gh(c, filePath(c));
+  if (res.status === 404) return null;
+  if (!res.ok) throw ghErr(res);
+  const j = await res.json();
+  let text;
+  if (j.encoding === 'base64' && j.content) text = atob(j.content.replace(/\s/g,''));
+  else { const r2 = await gh(c, filePath(c), {raw:true}); if (!r2.ok) throw ghErr(r2); text = await r2.text(); } // archivos > 1 MB
+  return {sha:j.sha, text};
+}
+async function putRemote(c, text, sha){
+  const body = {message:'Sync ' + new Date().toISOString(), content:btoa(text)};
+  if (sha) body.sha = sha;
+  const res = await gh(c, filePath(c), {method:'PUT', body});
+  if (res.status === 409 || res.status === 422){ const e = new Error('conflict'); e.conflict = true; throw e; }
+  if (!res.ok) throw ghErr(res);
+  return (await res.json()).content.sha;
+}
+
+/* Lógica de sincronización */
+function syncChanged(){
+  if (!cfg) return;
+  changeSeq++;
+  if (!cfg.dirty){ cfg.dirty = true; saveCfg(); }
+  if (ckey){ setSync('pending'); schedule(2500); }
+}
+function schedule(ms){ clearTimeout(pushT); pushT = setTimeout(()=>sync(), ms); }
+const hasLocalData = () => Object.values(S.days).some(d=>d.entries && d.entries.length) || S.measures.length > 0 || S.meals.length > 0;
+
+async function sync(manual){
+  if (!cfg || !ckey || choosing) return;
+  if (syncing){ again = true; return; }
+  syncing = true; setSync('syncing');
+  try {
+    for (let i=0; i<3; i++){
+      try { await syncOnce(); break; } catch(e){ if (!e.conflict || i===2) throw e; }
+    }
+    if (!choosing){ setSync(cfg.dirty ? 'pending' : 'ok'); lastErr = ''; if (manual) toast('☁️ Sincronizado'); }
+  } catch(e){
+    setSync(e.offline ? 'offline' : 'error', e.message);
+    if (manual || !e.offline){ if (manual || e.message !== lastErr) toast(e.message); lastErr = e.message; }
+  } finally {
+    syncing = false;
+    if (again){ again = false; schedule(1500); }
+  }
+}
+async function syncOnce(){
+  const r = await getRemote(cfg);
+  if (!r){ // el archivo no existe (o se borró): se crea con los datos locales
+    const mark = changeSeq;
+    rememberSha(await putRemote(cfg, await encryptState(S), null));
+    if (mark === changeSeq) cfg.dirty = false;
+    cfg.last = Date.now(); saveCfg(); return;
+  }
+  const remoteChanged = r.sha !== cfg.sha && !(cfg.known || []).includes(r.sha);
+  if (remoteChanged){
+    const env = parseEnv(r.text);
+    if (env.salt !== cfg.salt) throw new Error('La nube se cifró con otra contraseña. Desconecta este dispositivo y vuelve a conectar.');
+    const remote = await decryptEnv(env, ckey);
+    if (document.querySelector('.overlay')){ pendingPull = true; return; } // se aplica al cerrar la ventana abierta
+    if (!cfg.dirty) applyRemote(remote, r.sha, true);
+    else askResolve(remote, r.sha, false);
+    return;
+  }
+  if (cfg.dirty){
+    const mark = changeSeq;
+    rememberSha(await putRemote(cfg, await encryptState(S), cfg.sha));
+    if (mark === changeSeq) cfg.dirty = false;
+  }
+  cfg.last = Date.now(); saveCfg();
+}
+function applyRemote(remote, sha, notify){
+  S = migrate(remote); saveLocal();
+  rememberSha(sha); cfg.dirty = false; cfg.last = Date.now(); saveCfg();
+  render();
+  if (notify) toast('☁️ Datos actualizados desde la nube');
+}
+function mergeStates(L, R){
+  const out = migrate(JSON.parse(JSON.stringify(L))), Rc = migrate(JSON.parse(JSON.stringify(R)));
+  const byId = (a, b) => { const m = new Map(); b.forEach(x=>m.set(x.id, x)); a.forEach(x=>m.set(x.id, x)); return [...m.values()]; };
+  out.foods = byId(out.foods, Rc.foods);
+  out.meals = byId(out.meals, Rc.meals);
+  const md = new Map();
+  [...Rc.measures, ...out.measures].forEach(x => { const o = md.get(x.date); md.set(x.date, o ? {...o, vals:{...o.vals, ...x.vals}, note:x.note || o.note} : x); });
+  out.measures = [...md.values()];
+  const days = Rc.days;
+  Object.entries(out.days).forEach(([d, v]) => { const r = days[d]; days[d] = r ? {type:v.type, entries:byId(v.entries, r.entries)} : v; });
+  out.days = days;
+  return out;
+}
+function askResolve(remote, sha, initial){
+  choosing = true; setSync('conflict');
+  let done = false;
+  const nd = o => Object.values(o.days || {}).filter(d=>d.entries && d.entries.length).length;
+  sheet(`<div class="sh-head"><h3>${initial ? 'Ya hay datos en la nube' : 'Cambios en dos dispositivos'}</h3></div>
+    <div class="hint" style="font-size:14px">${initial ? 'Este dispositivo y la nube tienen datos distintos.' : 'Se modificaron los datos aquí y en otro dispositivo desde la última sincronización.'}<br><br>
+      ☁️ Nube: <b>${nd(remote)}</b> días con comidas · <b>${(remote.measures || []).length}</b> registros de medidas<br>
+      📱 Este dispositivo: <b>${nd(S)}</b> días con comidas · <b>${S.measures.length}</b> registros de medidas</div>
+    <button class="btn" data-r="merge">🔀 Combinar ambos (recomendado)</button>
+    <button class="btn ghost" data-r="cloud">☁️ Usar solo los de la nube</button>
+    <button class="btn ghost" data-r="local" style="margin-top:10px">📱 Usar solo los de este dispositivo</button>
+    <div class="hint">Combinar une todos los registros; algo que borraste en un solo dispositivo podría reaparecer. Antes de reemplazar nada se guarda una copia local de respaldo.</div>`,
+  (el, close) => {
+    el.onclick = ev => {
+      const b = ev.target.closest('[data-r]'); if (!b) return;
+      done = true;
+      try { localStorage.setItem(KEY + '_backup', JSON.stringify(S)); } catch(e){}
+      const ch = b.dataset.r;
+      if (ch === 'cloud'){ S = migrate(remote); saveLocal(); cfg.dirty = false; }
+      else if (ch === 'merge'){ S = mergeStates(S, remote); saveLocal(); cfg.dirty = true; }
+      else cfg.dirty = true;
+      rememberSha(sha); cfg.last = Date.now(); saveCfg();
+      choosing = false; close(); render();
+      if (cfg.dirty) sync(); else setSync('ok');
+    };
+  },
+  () => { if (!done){ choosing = false; setSync('conflict', 'Conflicto sin resolver: pulsa “Sincronizar ahora” para elegir qué datos conservar.'); } });
+}
+
+/* Estado visible */
+function ago(ts){
+  const s = (Date.now() - ts) / 1000;
+  if (s < 60) return 'hace un momento';
+  if (s < 3600) return 'hace ' + Math.floor(s/60) + ' min';
+  if (s < 86400) return 'hace ' + Math.floor(s/3600) + ' h';
+  return new Date(ts).toLocaleDateString('es-ES', {day:'numeric', month:'short'});
+}
+function statusText(){
+  const last = cfg && cfg.last ? ' · última vez ' + ago(cfg.last) : '';
+  return ({ok:'✅ Sincronizado' + last, syncing:'🔄 Sincronizando…', pending:'⏳ Cambios pendientes de subir' + last,
+    offline:'📴 Sin conexión: los cambios se subirán cuando vuelva internet', error:'⚠️ ' + sstate.msg,
+    conflict:'⚠️ ' + (sstate.msg || 'Elige qué datos conservar'), locked:'🔒 Bloqueado: introduce tu contraseña de cifrado', off:''})[sstate.st] || '';
+}
+function setSync(st, msg){
+  sstate = {st, msg: msg || ''};
+  document.querySelector('.nav').classList.toggle('serr', ['error','conflict','locked'].includes(st));
+  const el = document.getElementById('syncst'); if (el) el.textContent = statusText();
+}
+
+/* Tarjeta de Ajustes */
+function drawCloud(el){
+  const guide = `<details class="how inl"><summary>📘 Cómo configurarlo (5 min)</summary>
+    <p>1. En GitHub crea un repositorio <b>privado</b>, p. ej. <b>macros-data</b> (marca “Add a README file”).</p>
+    <p>2. Ve a <b>Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token</b>.</p>
+    <p>3. En <b>Repository access</b> elige <b>Only select repositories → macros-data</b>. En <b>Permissions → Repository permissions</b> pon <b>Contents: Read and write</b>. Elige una caducidad y genera el token.</p>
+    <p>4. Escribe aquí tu usuario, el repositorio y el token, e inventa una <b>contraseña de cifrado</b> (mínimo 10 caracteres). Guárdala bien: si la olvidas, la copia de la nube no se puede descifrar.</p>
+    <p>5. En otro dispositivo, usa el mismo repositorio y la <b>misma contraseña</b>.</p></details>`;
+  const noAuto = 'autocapitalize="off" autocorrect="off" spellcheck="false"';
+  if (!cfg){
+    el.innerHTML = `<div class="sec">☁️ Copia en la nube (GitHub, cifrada)</div>
+      <div class="hint">Guarda tus datos en un repositorio privado tuyo y accede desde cualquier dispositivo. Se cifran en el teléfono antes de salir, así que GitHub solo almacena datos ilegibles.</div>
+      <div class="g2">
+        <div><label class="f">Usuario de GitHub</label><input id="co" ${noAuto} placeholder="tu-usuario"></div>
+        <div><label class="f">Repositorio privado</label><input id="cr" ${noAuto} value="macros-data"></div>
+      </div>
+      <label class="f">Token (fine-grained)</label><input id="ct" type="password" autocomplete="off" ${noAuto} placeholder="github_pat_…">
+      <label class="f">Contraseña de cifrado</label><input id="cp" type="password" autocomplete="new-password">
+      <label class="f">Repite la contraseña</label><input id="cp2" type="password" autocomplete="new-password">
+      <div class="hint">Si ya conectaste otro dispositivo, usa la misma contraseña.</div>
+      <button class="btn" id="cgo">Conectar</button>${guide}`;
+    el.querySelector('#cgo').onclick = () => connectCloud(el);
+    return;
+  }
+  const where = `<div class="hint">${esc(cfg.owner)}/${esc(cfg.repo)} · ${esc(cfg.path)}</div>`;
+  if (!ckey){
+    el.innerHTML = `<div class="sec">☁️ Copia en la nube</div>${where}<div class="sync-st" id="syncst"></div>
+      <label class="f">Contraseña de cifrado</label><input id="cu" type="password" autocomplete="current-password">
+      <button class="btn" id="cun">Desbloquear</button>
+      <button class="btn danger" id="cdis">Desconectar este dispositivo</button>`;
+    el.querySelector('#cun').onclick = () => unlockCloud(el);
+  } else {
+    el.innerHTML = `<div class="sec">☁️ Copia en la nube</div>${where}<div class="sync-st" id="syncst"></div>
+      <button class="btn ghost" id="cnow">🔄 Sincronizar ahora</button>
+      <button class="btn danger" id="cdis">Desconectar este dispositivo</button>
+      <div class="hint" style="margin-top:10px">Los cambios se suben solos unos segundos después de cada registro y se descargan al abrir la app. Si el token caduca, desconecta y vuelve a conectar con uno nuevo y la misma contraseña; tus datos no se pierden.</div>`;
+    el.querySelector('#cnow').onclick = () => { choosing = false; sync(true); };
+  }
+  el.querySelector('#syncst').textContent = statusText();
+  el.querySelector('#cdis').onclick = async () => {
+    if (!confirm('¿Desconectar este dispositivo? Tus datos locales se conservan y la copia de la nube no se borra.')) return;
+    clearTimeout(pushT); cfg = null; ckey = null; saveCfg();
+    try { await idbDel('key'); } catch(e){}
+    setSync('off'); render(); toast('Dispositivo desconectado de la nube');
+  };
+}
+async function connectCloud(el){
+  const val = id => el.querySelector(id).value.trim();
+  let owner = val('#co').replace(/^https?:\/\/github\.com\//i, '').replace(/\/+$/, ''), repo = val('#cr');
+  if (owner.includes('/')) [owner, repo] = owner.split('/');
+  const token = val('#ct'), pass = el.querySelector('#cp').value, pass2 = el.querySelector('#cp2').value;
+  if (!owner || !repo || !token){ toast('Completa usuario, repositorio y token'); return; }
+  if (pass.length < 10){ toast('La contraseña debe tener al menos 10 caracteres'); return; }
+  if (pass !== pass2){ toast('Las contraseñas no coinciden'); return; }
+  if (!window.crypto || !crypto.subtle){ toast('Abre la app desde su dirección https (GitHub Pages) para poder cifrar'); return; }
+  const btn = el.querySelector('#cgo'); btn.disabled = true; btn.textContent = 'Conectando…';
+  const c = {owner, repo, path:DATA_FILE, token, iter:ITER, known:[]};
+  try {
+    const rr = await gh(c, repoPath(c));
+    if (!rr.ok) throw ghErr(rr);
+    const info = await rr.json();
+    if (!info.private && !confirm('⚠️ Ese repositorio es PÚBLICO. Los datos irán cifrados, pero se recomienda uno privado. ¿Continuar igualmente?')) throw new Error('Conexión cancelada');
+    btn.textContent = 'Cifrando…';
+    const r = await getRemote(c);
+    let remote = null;
+    if (r){
+      const env = parseEnv(r.text);
+      c.salt = env.salt; c.iter = env.iter || ITER;
+      ckey = await deriveKey(pass, unb64(c.salt), c.iter);
+      remote = await decryptEnv(env, ckey);
+    } else {
+      c.salt = b64(crypto.getRandomValues(new Uint8Array(16)));
+      ckey = await deriveKey(pass, unb64(c.salt), c.iter);
+    }
+    cfg = c;
+    if (!r){
+      rememberSha(await putRemote(cfg, await encryptState(S), null));
+      cfg.dirty = false; cfg.last = Date.now(); saveCfg();
+      toast('☁️ Conectado: tus datos ya están cifrados en la nube');
+    } else if (!hasLocalData()){
+      applyRemote(remote, r.sha, false);
+      toast('☁️ Conectado: datos descargados de la nube');
+    } else {
+      cfg.sha = null; cfg.dirty = true; saveCfg(); // si se cierra sin elegir, se volverá a preguntar
+      askResolve(remote, r.sha, true);
+    }
+    try { await idbSet('key', ckey); } catch(e){}
+    if (!choosing) setSync('ok');
+    render();
+  } catch(e){
+    cfg = null; ckey = null; saveCfg();
+    toast(e.message); btn.disabled = false; btn.textContent = 'Conectar';
+  }
+}
+async function unlockCloud(el){
+  const pass = el.querySelector('#cu').value; if (!pass) return;
+  const btn = el.querySelector('#cun'); btn.disabled = true; btn.textContent = 'Comprobando…';
+  try {
+    const r = await getRemote(cfg);
+    let key;
+    if (r){
+      const env = parseEnv(r.text);
+      key = await deriveKey(pass, unb64(env.salt), env.iter || ITER);
+      await decryptEnv(env, key);
+      cfg.salt = env.salt; cfg.iter = env.iter || ITER;
+    } else key = await deriveKey(pass, unb64(cfg.salt), cfg.iter);
+    ckey = key; saveCfg();
+    try { await idbSet('key', key); } catch(e){}
+    setSync('pending'); render(); sync(true);
+  } catch(e){ toast(e.message); btn.disabled = false; btn.textContent = 'Desbloquear'; }
+}
+async function syncInit(){
+  if (!cfg) return;
+  try { ckey = await idbGet('key') || null; } catch(e){ ckey = null; }
+  if (!ckey){ setSync('locked'); toast('🔒 Ve a Ajustes para desbloquear la sincronización'); if (tab==='ajustes') render(); return; }
+  if (tab==='ajustes') render();
+  sync();
+}
+document.addEventListener('visibilitychange', () => {
+  if (!cfg || !ckey) return;
+  if (document.visibilityState === 'visible') sync();
+  else if (cfg.dirty){ clearTimeout(pushT); sync(); }
+});
+window.addEventListener('online', () => sync());
+
 render();
+syncInit();
 </script>
 </body>
 </html>
