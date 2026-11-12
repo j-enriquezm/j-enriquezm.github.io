@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; connect-src https://api.github.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; connect-src https://api.github.com https://api.nal.usda.gov https://search.openfoodfacts.org https://world.openfoodfacts.org; base-uri 'none'; form-action 'none'; object-src 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="theme-color" content="#2563eb">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -112,6 +112,19 @@ input[type=date]{min-height:48px}
 .nav.serr .sdot{display:block}
 .sync-st{font-size:14px;margin:10px 0 2px;padding:10px 12px;border-radius:12px;background:var(--bg);line-height:1.4}
 .btn:disabled{opacity:.6}
+.olist{max-height:320px;overflow-y:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--line);border-radius:12px;padding:0 12px 4px;margin-top:8px;background:var(--bg)}
+.osec{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:12px 0 2px}
+.osec small{text-transform:none;font-weight:400;letter-spacing:0;text-align:right}
+.ostat{font-size:13px;color:var(--muted);padding:8px 2px}
+.orow{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--line);cursor:pointer}
+.osec + .orow{border-top:0}
+.orow .en{font-size:14px}
+.orow .use{color:var(--accent);font-weight:700;font-size:13px;white-space:nowrap}
+.osel{margin-top:8px;padding:10px 12px;border-radius:12px;background:var(--bg);border:1px solid var(--k);font-size:13px;line-height:1.4}
+.lnk{background:none;border:0;color:var(--accent);font-weight:600;font-size:13px;padding:8px 0 0}
+.lb{font-weight:400}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:sp .7s linear infinite;vertical-align:-2px;margin-right:6px}
+@keyframes sp{to{transform:rotate(360deg)}}
 @media (max-width:360px){.cmp{grid-template-columns:92px 1fr 58px}}
 @media (max-width:360px){.ring{width:108px;height:108px}.ring svg{width:108px;height:108px}.ringtxt b{font-size:22px}.summary{gap:12px}}
 </style>
@@ -400,8 +413,9 @@ function openPicker({title, meal, onPick}){
       s.style.display = mode==='quick' ? 'none' : '';
       if (mode==='foods'){
         const items = sortedFoods(q);
-        list.innerHTML = `<button class="newbtn" data-new>+ Crear nuevo alimento</button>` +
-          (items.length ? items.map(foodRow).join('') : `<div class="empty">No hay resultados para “${esc(q)}”.</div>`);
+        const qt = q.trim();
+        list.innerHTML = `<button class="newbtn" data-new>${qt.length >= 3 && S.settings.online !== false ? `🔎 Crear “${esc(qt)}” buscando en línea` : '+ Crear nuevo alimento'}</button>` +
+          (items.length ? items.map(foodRow).join('') : `<div class="empty">“${esc(q)}” no está en tus alimentos.<br>Pulsa el botón de arriba para buscarlo en línea y autocompletar sus macros.</div>`);
       } else if (mode==='meals'){
         const nq = norm(q), items = S.meals.filter(m=>!nq || norm(m.name).includes(nq));
         list.innerHTML = items.length ? items.map(mealRow).join('') :
@@ -431,7 +445,7 @@ function openPicker({title, meal, onPick}){
       }
     }
     list.onclick = e => {
-      if (e.target.closest('[data-new]')) { openFoodEditor(null, f => onPick(f, close)); return; }
+      if (e.target.closest('[data-new]')) { openFoodEditor(null, f => onPick(f, close), q); return; }
       const fr = e.target.closest('[data-fid]');
       if (fr){ const f = S.foods.find(x=>x.id===fr.dataset.fid); if (f) onPick(f, close); return; }
       const mr = e.target.closest('[data-mid]');
@@ -528,10 +542,154 @@ function openMealMenu(meal){
 }
 
 /* ---------- Editor de alimento ---------- */
-function openFoodEditor(food, onSaved){
-  const fd = food || {name:'', unit:'g', base:100, kcal:'', p:'', c:'', f:'', fav:false};
+/* ---------- Búsqueda de alimentos en línea ----------
+   USDA FoodData Central: alimentos genéricos analizados (por 100 g), dominio público.
+   Open Food Facts: productos de marca, datos aportados por la comunidad (ODbL). */
+const USDA_URL = 'https://api.nal.usda.gov/fdc/v1/foods/search';
+const OFF_NEW = 'https://search.openfoodfacts.org/search';
+const OFF_OLD = 'https://world.openfoodfacts.org/cgi/search.pl';
+const OFF_FIELDS = 'code,product_name,product_name_es,generic_name,brands,nutriments,serving_size,serving_quantity,quantity';
+// USDA solo entiende inglés: se traduce la búsqueda (primero frases, luego palabras)
+const ES_PHRASES = [
+  ['arroz integral','brown rice'],['arroz blanco','white rice'],['pan integral','whole wheat bread'],['pan blanco','white bread'],
+  ['clara de huevo','egg white'],['claras de huevo','egg white'],['yema de huevo','egg yolk'],
+  ['crema de cacahuate','peanut butter'],['crema de cacahuete','peanut butter'],['mantequilla de mani','peanut butter'],['mantequilla de cacahuate','peanut butter'],
+  ['aceite de oliva','olive oil'],['leche de almendra','almond milk'],['leche de avena','oat milk'],['carne molida','ground beef'],['carne de res','beef'],
+  ['carne de cerdo','pork'],['queso cottage','cottage cheese'],['queso fresco','queso fresco'],['queso panela','queso fresco'],['harina de avena','oat flour'],
+  ['frijoles negros','black beans'],['frijol negro','black beans'],['papa dulce','sweet potato'],['a la plancha','grilled'],['al horno','baked'],
+  ['pechuga de pavo','turkey breast'],['pechuga de pollo','chicken breast'],['muslo de pollo','chicken thigh'],['proteina de suero','whey protein'],
+  ['yogur griego','greek yogurt'],['yogurt griego','greek yogurt'],['tortilla de maiz','corn tortilla'],['tortilla de harina','flour tortilla']
+];
+const ES_WORDS = {pollo:'chicken',pechuga:'breast',muslo:'thigh',pavo:'turkey',res:'beef',ternera:'beef',carne:'beef',molida:'ground',cerdo:'pork',lomo:'loin',
+  jamon:'ham',tocino:'bacon',salmon:'salmon',atun:'tuna',pescado:'fish',camaron:'shrimp',gamba:'shrimp',sardina:'sardine',bacalao:'cod',huevo:'egg',clara:'egg white',
+  leche:'milk',descremada:'nonfat',desnatada:'nonfat',semidescremada:'reduced fat',entera:'whole',yogur:'yogurt',yogurt:'yogurt',griego:'greek',queso:'cheese',
+  requeson:'ricotta',mantequilla:'butter',crema:'cream',arroz:'rice',avena:'oats',pan:'bread',maiz:'corn',elote:'corn',pasta:'pasta',espagueti:'spaghetti',
+  papa:'potato',patata:'potato',camote:'sweet potato',batata:'sweet potato',frijol:'beans',lenteja:'lentils',garbanzo:'chickpeas',quinoa:'quinoa',quinua:'quinoa',
+  platano:'banana',manzana:'apple',naranja:'orange',fresa:'strawberries',arandano:'blueberries',frambuesa:'raspberries',uva:'grapes',pina:'pineapple',sandia:'watermelon',
+  pera:'pear',durazno:'peach',melocoton:'peach',limon:'lemon',aguacate:'avocado',palta:'avocado',brocoli:'broccoli',espinaca:'spinach',lechuga:'lettuce',
+  tomate:'tomato',jitomate:'tomato',zanahoria:'carrot',pepino:'cucumber',cebolla:'onion',ajo:'garlic',pimiento:'pepper',calabacin:'zucchini',calabacita:'zucchini',
+  champinon:'mushrooms',hongo:'mushrooms',ejote:'green beans',coliflor:'cauliflower',esparrago:'asparagus',almendra:'almonds',nuez:'walnuts',nueces:'walnuts',
+  cacahuate:'peanuts',cacahuete:'peanuts',mani:'peanuts',aceite:'oil',oliva:'olive',miel:'honey',azucar:'sugar',cafe:'coffee',jugo:'juice',zumo:'juice',
+  galleta:'cookies',chia:'chia seeds',linaza:'flaxseed',semilla:'seeds',proteina:'protein',suero:'whey',salchicha:'sausage',mayonesa:'mayonnaise',salsa:'sauce',
+  harina:'flour',cocido:'cooked',cocida:'cooked',crudo:'raw',cruda:'raw',hervido:'boiled',hervida:'boiled',asado:'roasted',asada:'roasted',frito:'fried',frita:'fried',
+  plancha:'grilled',horneado:'baked',horneada:'baked',escurrido:'drained',enlatado:'canned',agua:'water',integral:'whole grain',blanco:'white',negro:'black',rojo:'red',verde:'green'};
+const ES_STOP = new Set(['de','del','la','el','los','las','con','en','y','a','al','sin','un','una','para']);
+function toEnglish(q){
+  let s = ' ' + norm(q).replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim() + ' ';
+  ES_PHRASES.forEach(([es,en]) => { s = s.split(' ' + es + ' ').join(' ' + en.replace(/ /g,'_') + ' '); });
+  const out = s.trim().split(' ').filter(w => w && !ES_STOP.has(w)).map(w => {
+    if (w.includes('_')) return w.replace(/_/g,' ');
+    if (ES_WORDS[w]) return ES_WORDS[w];
+    if (w.endsWith('es') && ES_WORDS[w.slice(0,-2)]) return ES_WORDS[w.slice(0,-2)];
+    if (w.endsWith('s') && ES_WORDS[w.slice(0,-1)]) return ES_WORDS[w.slice(0,-1)];
+    return w;
+  });
+  return [...new Set(out.join(' ').split(' '))].join(' ');
+}
+
+const osCache = new Map();
+let offHits = [];
+const offAllowed = () => { const t = Date.now(); offHits = offHits.filter(x => t - x < 60000); return offHits.length < 8; }; // OFF limita a 10 búsquedas/min
+async function getJSON(url, signal){
+  const res = await fetch(url, {signal, referrerPolicy:'no-referrer'});
+  if (!res.ok){ const e = new Error('HTTP ' + res.status); e.status = res.status; throw e; }
+  return res.json();
+}
+function pickNutrient(list, nums, ids){
+  for (let i=0;i<nums.length;i++){
+    const n = list.find(x => (String(x.nutrientNumber)===nums[i] || x.nutrientId===ids[i]) && !/kj/i.test(x.unitName||''));
+    if (n && n.value != null) return num(n.value);
+  }
+  return null;
+}
+function usdaItem(f){
+  const L = f.foodNutrients || [];
+  const p = pickNutrient(L,['203'],[1003]), c = pickNutrient(L,['205'],[1005]), fat = pickNutrient(L,['204'],[1004]);
+  let kcal = pickNutrient(L,['208','957','958'],[1008,2047,2048]);
+  if (p==null && c==null && fat==null) return null;
+  if (kcal==null) kcal = 4*(p||0) + 4*(c||0) + 9*(fat||0);
+  const portions = (f.foodMeasures || [])
+    .filter(m => num(m.gramWeight) > 0 && m.disseminationText && !/quantity not specified/i.test(m.disseminationText))
+    .slice(0,4).map(m => ({label:m.disseminationText, g:num(m.gramWeight)}));
+  const d = String(f.description || '').toLowerCase();
+  return {src:'usda', id:f.fdcId, name:d.charAt(0).toUpperCase() + d.slice(1), sub:'USDA · ' + (f.dataType || 'genérico'), unit:'g', base:100, kcal, p:p||0, c:c||0, f:fat||0, portions};
+}
+async function searchUSDA(q, signal){
+  const en = toEnglish(q), key = 'usda|' + en;
+  if (osCache.has(key)) return osCache.get(key);
+  const k = (S.settings.usdaKey || '').trim() || 'DEMO_KEY';
+  const j = await getJSON(USDA_URL + '?api_key=' + encodeURIComponent(k) + '&query=' + encodeURIComponent(en) +
+    '&dataType=' + encodeURIComponent('Foundation,SR Legacy') + '&pageSize=15', signal);
+  const toks = en.split(' ');
+  const items = (j.foods || []).map(usdaItem).filter(Boolean)
+    .map((it,i) => ({it, i, s:toks.filter(t => it.name.toLowerCase().includes(t)).length}))
+    .sort((a,b) => (b.s - a.s) || (a.i - b.i)).map(x => x.it).slice(0,8);
+  osCache.set(key, items);
+  return items;
+}
+const pickLang = v => v && typeof v === 'object' ? (v.es || v.main || v.en || Object.values(v)[0] || '') : (v || '');
+function offItem(p){
+  const n = p.nutriments || {};
+  const g = k => n[k] != null && n[k] !== '' ? num(n[k]) : null;
+  let kcal = g('energy-kcal_100g'); if (kcal == null && g('energy_100g') != null) kcal = g('energy_100g') / 4.184;
+  const pr = g('proteins_100g'), c = g('carbohydrates_100g'), f = g('fat_100g');
+  if (pr==null && c==null && f==null) return null;
+  if (kcal == null) kcal = 4*(pr||0) + 4*(c||0) + 9*(f||0);
+  if (kcal > 950 || (pr||0) + (c||0) + (f||0) > 105) return null; // valores imposibles por 100 g
+  const name = String(pickLang(p.product_name_es) || pickLang(p.product_name) || pickLang(p.generic_name)).trim();
+  if (!name) return null;
+  const brand = (Array.isArray(p.brands) ? p.brands.join(',') : String(p.brands || '')).split(',')[0].trim();
+  const ml = /\d\s*(ml|cl|l)\b/i.test(String(p.quantity || ''));
+  const sq = num(p.serving_quantity);
+  const portions = sq > 0 && sq < 2000 ? [{label:'Porción de la etiqueta' + (p.serving_size ? ' · ' + p.serving_size : ''), g:sq}] : [];
+  return {src:'off', id:p.code, name, brand, sub:(brand ? brand + ' · ' : '') + 'Open Food Facts', unit:ml ? 'ml' : 'g', base:100, kcal, p:pr||0, c:c||0, f:f||0, portions};
+}
+async function searchOFF(q, signal){
+  const key = 'off|' + norm(q);
+  if (osCache.has(key)) return osCache.get(key);
+  if (!offAllowed()){ const e = new Error('throttle'); e.throttle = true; throw e; }
+  offHits.push(Date.now());
+  const toItems = list => { const seen = new Set(); return list.map(offItem).filter(it => {
+    if (!it) return false;
+    const k = norm(it.name + '|' + (it.brand || ''));
+    if (seen.has(k)) return false; seen.add(k); return true;
+  }).slice(0,8); };
+  let items = [], err = null;
+  try {
+    const j = await getJSON(OFF_NEW + '?q=' + encodeURIComponent(q) + '&langs=es,en&page_size=15&fields=' + OFF_FIELDS, signal);
+    items = toItems(j.hits || j.products || []);
+  } catch(e){ if (e.name === 'AbortError') throw e; err = e; }
+  if (!items.length && offAllowed()){ // respaldo: buscador clásico
+    offHits.push(Date.now());
+    try {
+      const j = await getJSON(OFF_OLD + '?search_terms=' + encodeURIComponent(q) + '&search_simple=1&action=process&json=1&lc=es&page_size=15&fields=' + OFF_FIELDS, signal);
+      items = toItems(j.products || []); err = null;
+    } catch(e){ if (e.name === 'AbortError') throw e; if (!err) err = e; }
+  }
+  if (err && !items.length) throw err;
+  osCache.set(key, items);
+  return items;
+}
+function osErr(src, e){
+  if (e.throttle) return 'Muchas búsquedas seguidas; reintento en unos segundos…';
+  if (e.name === 'AbortError') return 'La búsqueda tardó demasiado. Pulsa Intro en el nombre para reintentar.';
+  if (!navigator.onLine) return 'Sin conexión: introduce los valores a mano.';
+  if (src === 'usda'){
+    if (e.status === 429) return 'Límite de búsquedas USDA alcanzado' + ((S.settings.usdaKey || '').trim() ? ' (1.000/hora).' : ': sin clave son 30/hora. Añade tu clave gratuita en Ajustes.');
+    if (e.status === 401 || e.status === 403) return 'Clave de USDA no válida. Revísala en Ajustes.';
+  }
+  if (e.status === 429 || e.status === 503) return 'El servicio está saturado; inténtalo en un minuto.';
+  return 'No se pudo consultar ' + (src === 'usda' ? 'USDA.' : 'Open Food Facts.');
+}
+
+function openFoodEditor(food, onSaved, initName){
+  const fd = food || {name:(initName || '').trim(), unit:'g', base:100, kcal:'', p:'', c:'', f:'', fav:false};
+  const online = !food && S.settings.online !== false;
+  let timer = null, ctrl = null, seq = 0, lastQ = '', picked = null, collapsed = false;
+  const res = {usda:{st:'idle', items:[]}, off:{st:'idle', items:[]}, en:''};
   sheet(`${head(food ? 'Editar alimento' : 'Nuevo alimento')}
-    <label class="f">Nombre</label><input id="fn" value="${esc(fd.name)}" placeholder="Ej. Pechuga de pollo">
+    <label class="f">Nombre</label><input id="fn" value="${esc(fd.name)}" autocomplete="off" placeholder="${online ? 'Escribe para buscar, p. ej. pechuga de pollo' : 'Ej. Pechuga de pollo'}">
+    ${online ? '<div id="os"></div>' : ''}
     <div class="g2">
       <div><label class="f">Cantidad de referencia</label><input id="fb" inputmode="decimal" value="${fd.base}"></div>
       <div><label class="f">Unidad</label><select id="fu">${Object.entries(UNITS).map(([k,v])=>`<option value="${k}" ${k===fd.unit?'selected':''}>${v}</option>`).join('')}</select></div>
@@ -550,6 +708,85 @@ function openFoodEditor(food, onSaved){
     const g = id => el.querySelector(id);
     const auto = () => g('#fk').placeholder = 'Auto: ' + r0(4*num(g('#fp').value)+4*num(g('#fc').value)+9*num(g('#ff').value));
     ['#fp','#fc','#ff'].forEach(i=>g(i).addEventListener('input', auto)); auto();
+    if (online){
+      const os = g('#os'), fn = g('#fn');
+      const row = (it, i) => `<div class="orow" data-oi="${it.src}:${i}"><div><div class="en">${esc(it.name)}</div><div class="es">${esc(it.sub)} · por 100 ${it.unit}<br>${macroLine(it)}</div></div><span class="use">Usar</span></div>`;
+      const section = (src, title, note) => {
+        const r = res[src]; let body;
+        if (r.st === 'loading') body = '<div class="ostat"><span class="spin"></span>Buscando…</div>';
+        else if (r.st === 'error') body = `<div class="ostat">⚠️ ${esc(r.msg)}</div>`;
+        else if (r.st === 'done' && !r.items.length) body = '<div class="ostat">Sin resultados. Prueba con otras palabras.</div>';
+        else if (r.st === 'done') body = r.items.map(row).join('');
+        else return '';
+        return `<div class="osec"><span>${title}</span><small>${note || ''}</small></div>${body}`;
+      };
+      const drawOS = () => {
+        if (picked && collapsed){
+          const por = picked.por;
+          os.innerHTML = `<div class="osel">✅ Autocompletado con <b>${esc(picked.name)}</b><br><span class="es">${esc(picked.sub)}${picked.src === 'off' ? ' · datos de la comunidad: compáralos con la etiqueta' : ''}</span>
+            ${picked.portions.length ? `<div class="es" style="margin-top:8px">Guardar los valores:</div><div class="chips" style="margin-top:6px">
+              <button class="chip ${!por ? 'on' : ''}" data-por="-1">Por 100 ${picked.unit}</button>
+              ${picked.portions.map((p,i) => `<button class="chip ${por === p ? 'on' : ''}" data-por="${i}">${esc(p.label)} (${r1(p.g)} ${picked.unit})</button>`).join('')}</div>` : ''}
+            <button class="lnk" data-more>Ver otros resultados</button></div>`;
+          return;
+        }
+        if (!lastQ){ os.innerHTML = '<div class="hint">🔎 Escribe al menos 3 letras y buscaré el alimento en línea para autocompletar sus macros.</div>'; return; }
+        const asEn = res.en && res.en !== norm(lastQ) ? 'buscado como “' + esc(res.en) + '”' : '';
+        os.innerHTML = `<div class="olist">${section('usda', '🥦 Genéricos · USDA', asEn)}${section('off', '🏷️ Marcas · Open Food Facts', '')}</div>
+          <div class="hint">Toca un resultado para rellenar el formulario. Puedes ajustar cualquier valor antes de guardar.</div>`;
+      };
+      const apply = (it, por) => {
+        const k = por ? por.g / 100 : 1;
+        if (!fn.value.trim()) fn.value = it.brand ? it.name + ' (' + it.brand + ')' : it.name;
+        g('#fb').value = por ? 1 : 100;
+        g('#fu').value = por ? 'porcion' : it.unit;
+        g('#fp').value = r1(it.p * k); g('#fc').value = r1(it.c * k); g('#ff').value = r1(it.f * k); g('#fk').value = r0(it.kcal * k);
+        auto();
+        picked = Object.assign({}, it, {por}); picked.portions = it.portions;
+        if (por) picked.por = por;
+        collapsed = true; drawOS();
+      };
+      const run = q => {
+        lastQ = q; collapsed = false;
+        const my = ++seq;
+        if (ctrl) ctrl.abort();
+        const c = ctrl = new AbortController();
+        const to = setTimeout(() => c.abort(), 12000);
+        res.en = toEnglish(q); res.usda = {st:'loading', items:[]}; res.off = {st:'loading', items:[]};
+        drawOS();
+        const one = (src, fnc) => fnc(q, c.signal)
+          .then(items => ({st:'done', items}), e => ({st:'error', msg:osErr(src, e), throttle:!!e.throttle}))
+          .then(r => {
+            if (my !== seq) return;
+            res[src] = r;
+            if (!collapsed) drawOS();
+            if (r.throttle) setTimeout(() => { if (my === seq) run(q); }, 8000);
+          });
+        Promise.all([one('usda', searchUSDA), one('off', searchOFF)]).then(() => clearTimeout(to));
+      };
+      fn.addEventListener('input', () => {
+        clearTimeout(timer);
+        const q = fn.value.trim();
+        if (q.length < 3){ seq++; if (ctrl) ctrl.abort(); lastQ = ''; collapsed = false; drawOS(); return; }
+        if (q === lastQ || (picked && collapsed)) return; // tras elegir, renombrar no relanza la búsqueda (Intro sí)
+        timer = setTimeout(() => run(q), 800);
+      });
+      fn.addEventListener('keydown', e => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault(); clearTimeout(timer);
+        const q = fn.value.trim(); if (q.length >= 2) run(q);
+      });
+      os.onclick = e => {
+        if (e.target.closest('[data-more]')){ collapsed = false; drawOS(); return; }
+        const pb = e.target.closest('[data-por]');
+        if (pb && picked){ const i = +pb.dataset.por; apply(picked, i < 0 ? null : picked.portions[i]); return; }
+        const r = e.target.closest('[data-oi]'); if (!r) return;
+        const [src, i] = r.dataset.oi.split(':'), it = res[src].items[+i];
+        if (it) apply(it, null);
+      };
+      const q0 = fn.value.trim();
+      if (q0.length >= 3) run(q0); else { drawOS(); setTimeout(() => fn.focus(), 220); }
+    }
     g('#fu').onchange = () => {
       const u = g('#fu').value, b = num(g('#fb').value);
       if (u==='g'||u==='ml'){ if (b <= 5) g('#fb').value = 100; } else if (b >= 50) g('#fb').value = 1;
@@ -571,7 +808,7 @@ function openFoodEditor(food, onSaved){
       if (!confirm(`¿Eliminar “${food.name}”? Tu historial no se modifica.`)) return;
       S.foods = S.foods.filter(x=>x.id!==food.id); save(); render(); close(); toast('Alimento eliminado');
     };
-  });
+  }, () => { seq++; clearTimeout(timer); if (ctrl) ctrl.abort(); });
 }
 
 /* ---------- Editor de comida guardada ---------- */
@@ -630,7 +867,7 @@ function renderLib(m){
   m.querySelector('#lq').oninput = e => { libQ = e.target.value; draw(); };
   m.onclick = e => {
     const lm = e.target.closest('[data-lm]'); if (lm){ libMode = lm.dataset.lm; render(); return; }
-    if (e.target.closest('[data-new]')){ libMode==='foods' ? openFoodEditor(null) : openMealEditor(null); return; }
+    if (e.target.closest('[data-new]')){ libMode==='foods' ? openFoodEditor(null, null, libQ) : openMealEditor(null); return; }
     const fr = e.target.closest('[data-fid]'); if (fr){ openFoodEditor(S.foods.find(x=>x.id===fr.dataset.fid)); return; }
     const mr = e.target.closest('[data-mid]'); if (mr) openMealEditor(S.meals.find(x=>x.id===mr.dataset.mid));
   };
@@ -828,6 +1065,11 @@ function renderSet(m){
     <div class="card"><div class="sec">📏 Estatura (cm)</div>
       <input id="ht" inputmode="decimal" value="${S.settings.height || 190}" style="margin-top:8px">
       <div class="hint">Se usa para calcular tu relación cintura/estatura en Medidas.</div></div>
+    <div class="card"><div class="sec">🔎 Búsqueda de alimentos en línea</div>
+      <label class="chk" style="margin-top:8px"><input type="checkbox" id="onl" ${S.settings.online !== false ? 'checked' : ''}> Autocompletar macros al crear un alimento</label>
+      <label class="f">Clave gratuita de USDA (opcional)</label>
+      <input id="uk" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" value="${esc(S.settings.usdaKey || '')}" placeholder="Sin clave: 30 búsquedas/hora">
+      <div class="hint">Busca en <b>USDA FoodData Central</b> (alimentos genéricos) y en <b>Open Food Facts</b> (productos de marca). Sin clave, USDA permite 30 búsquedas por hora y 50 al día. Con una clave gratuita de <b>api.data.gov/signup</b> son 1.000 por hora. La clave se guarda con tus datos (cifrada si usas la nube).</div></div>
     <button class="btn" id="ssave" style="margin-top:0">Guardar ajustes</button>
     <div class="card" id="cloud" style="margin-top:14px"></div>
     <div class="card"><div class="sec">Copia de seguridad</div>
@@ -853,6 +1095,9 @@ function renderSet(m){
   m.querySelector('#ssave').onclick = () => {
     ['gym','rest'].forEach(k => { ['kcal','p','c','f'].forEach(x => { S.settings.targets[k][x] = r0(num(m.querySelector('#'+k+(x==='kcal'?'k':x)).value)); }); });
     const h = num(m.querySelector('#ht').value); if (h >= 100 && h <= 250) S.settings.height = r1(h);
+    S.settings.online = m.querySelector('#onl').checked;
+    S.settings.usdaKey = m.querySelector('#uk').value.trim();
+    osCache.clear();
     S.settings.restDays = rest; save(); toast('Ajustes guardados');
   };
   m.querySelector('#exp').onclick = () => {
